@@ -6,7 +6,7 @@ class Program
 {
     static async Task Main(string[] args)
     {
-        // Load configuration from user secrets
+        // Load configuration
         var config = new ConfigurationBuilder()
             .AddUserSecrets<Program>()
             .Build();
@@ -23,34 +23,57 @@ class Program
             return;
         }
 
-        // Configure the kernel with your LLM connection details
-        Kernel kernel = Kernel.CreateBuilder()
+        var kernel = Kernel.CreateBuilder()
             .AddAzureOpenAIChatCompletion(deployment, endpoint, key)
             .Build();
 
-        // Create the process builder
-        ProcessBuilder processBuilder = new("DocumentationGeneration");
+        var processBuilder = new ProcessBuilder("DocumentationCycle");
 
-        // Add the steps
+        // Add steps
         var infoGatheringStep = processBuilder.AddStepFromType<GatherProductInfoStep>();
         var docsGenerationStep = processBuilder.AddStepFromType<GenerateDocumentationStep>();
+        var docsProofreadStep = processBuilder.AddStepFromType<ProofreadStep>();
+        var humanApprovalStep = processBuilder.AddStepFromType<FinalHumanApprovalStep>();
         var docsPublishStep = processBuilder.AddStepFromType<PublishDocumentationStep>();
 
-        // Orchestrate the events
+        // Step orchestration (tutorial style)
         processBuilder
             .OnInputEvent("Start")
             .SendEventTo(new(infoGatheringStep));
 
         infoGatheringStep
             .OnEvent("ProductInfoGathered")
-            .SendEventTo(new(docsGenerationStep));
+            .SendEventTo(new(docsGenerationStep, functionName: "GenerateDocumentationAsync"));
 
         docsGenerationStep
             .OnEvent("DocumentationGenerated")
+            .SendEventTo(new(docsProofreadStep));
+
+        docsGenerationStep
+            .OnEvent("NeedsFinalApproval")
+            .SendEventTo(new(humanApprovalStep));
+
+        docsProofreadStep
+            .OnEvent("DocumentationRejected")
+            .SendEventTo(new(docsGenerationStep, functionName: "ApplySuggestionsAsync"));
+
+        docsProofreadStep
+            .OnEvent("DocumentationApproved")
             .SendEventTo(new(docsPublishStep));
 
-        // Build and run the process
+        humanApprovalStep
+            .OnEvent("DocumentationApproved")
+            .SendEventTo(new(docsPublishStep));
+
         var process = processBuilder.Build();
-        await process.StartAsync(kernel, new KernelProcessEvent { Id = "Start", Data = "Contoso GlowBrew" });
+
+        // Just run it — no persistence
+        await process.StartAsync(kernel, new KernelProcessEvent
+        {
+            Id = "Start",
+            Data = "Contoso GlowBrew"
+        });
+
+        Console.WriteLine("Process completed.");
     }
 }
